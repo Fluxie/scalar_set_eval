@@ -4,19 +4,24 @@ extern crate docopt;
 extern crate ro_scalar_set;
 extern crate rand;
 extern crate memmap;
+extern crate rayon;
 
 
 use std::fs::File;
+use std::io::BufWriter;
 use std::io::Result;
 use std::io::prelude::*;
 use std::time;
 use std::slice;
 use std::collections::HashSet;
 use std::iter::FromIterator;
+
 use memmap::{Mmap, Protection};
 use rand::distributions::{IndependentSample, Range};
+
 use docopt::Docopt;
 use ro_scalar_set::RoScalarSet;
+use rayon::prelude::*;
 
 const USAGE: &'static str = "
 Scalar Set Evaluator.
@@ -29,17 +34,19 @@ Usage:
 ro_scalar_set
 Options:
   -h --help     Show this screen.
-  --version     Show version.  
+  --version     Show version.
+  --mt          Multi-threaded
 ";
 
 #[derive(Debug, Deserialize)]
-struct Args {    
+struct Args {
     arg_file: String,
     arg_minvalue: i32,
     arg_maxvalue: i32,
     arg_sets: i32,
     arg_values: i32,
     flag_version: bool,
+    flag_mt: bool,
     cmd_new: bool,
     cmd_eval: bool,
 }
@@ -48,7 +55,7 @@ fn main() {
   let args: Args = Docopt::new(USAGE)
                             .and_then(|d| d.deserialize())
                             .unwrap_or_else(|e| e.exit());
-  
+
   // Generate new file?Launch
    let start = std::time::Instant::now();
   if args.cmd_new {
@@ -61,7 +68,6 @@ fn main() {
   let stop = std::time::Instant::now();
   let duration = stop.duration_since( start );
   println!("Operation took {}.{} s.",duration.as_secs(), duration.subsec_nanos() );
-  
 }
 
 fn generate(
@@ -73,21 +79,26 @@ fn generate(
 ) {
 
   println!("Generating {} sets to {}...", set_count, file );
-  let mut file = std::fs::File::create( file ).expect( "Failed to open the file." );
+  let mut file = BufWriter::with_capacity( 1024 * 1024, std::fs::File::create( file ).expect( "Failed to open the file." ) );
 
   // Prepare RNG.
   let between = Range::new( min_value, max_value );
-  let mut rng = rand::thread_rng();
 
-  // Generate the sets.
-  for _ in 0..set_count {
+  // Prepare array for holding the results.
+  let sets: Vec<i32> = ( 0..set_count ).collect();
+  let sets: Vec<_> = sets.par_iter()
+      .map( |_| {
+        let values = generate_values( values_in_set, &between );
+        let result = ro_scalar_set::ro_scalar_set::RoScalarSet::new( values.as_slice() );
+        return result;
+      } )
+      .collect();
 
-      // Generate a set.
-      let values = generate_values( values_in_set, &mut rng, &between );
-      let set = ro_scalar_set::ro_scalar_set::RoScalarSet::new( values.as_slice() );
+  // Serialize the sets to a file.
+  for set in sets {
+
       set.serialize( &mut file ).expect( "Writing scalar set to a file failed." );
   }
-
 }
 
 /// Evaluates integer sets.
@@ -102,7 +113,7 @@ fn evaluate<'a>(
   // Construct test vector.
   let between = Range::new( min_value, max_value );
   let mut rng = rand::thread_rng();
-  let test_set = generate_values( values_in_set, &mut rng, &between );
+  let test_set = generate_values( values_in_set, &between );
 
   // Open file for reading.
   let file = std::fs::File::open( file ).expect( "Failed to open the file." );
@@ -116,10 +127,11 @@ fn evaluate<'a>(
       let sets = attach_buffer( &buffer );
       
       // Run tests for each set.
-      let mut match_counter: u32 = 0;
-      for s in sets {
-          match_counter += evaluate_set( test_set.as_slice(), &s );
-      }
+      let start = std::time::Instant::now();
+      let match_counter = sets.par_iter().map( |s| evaluate_set( test_set.as_slice(), &s ) ).sum();      
+      let stop = std::time::Instant::now();
+      let duration = stop.duration_since( start );
+      println!("Set evaluation took {}.{} s.",duration.as_secs(), duration.subsec_nanos() );
       return match_counter;
     }   
   }
@@ -145,17 +157,16 @@ fn evaluate_set(
 
 fn generate_values(
   values_in_set: i32,
-  rng: &mut rand::ThreadRng,
   between: &Range<i32>
 ) -> Vec<i32> {
  
-
   // Collect random values.
+  let mut rng = rand::thread_rng();
   let mut values: HashSet<i32> = HashSet::new();
   values.reserve( values_in_set as usize );
   while values.len() < values_in_set as usize {
 
-      let v = between.ind_sample( rng );
+      let v = between.ind_sample( &mut rng );
       values.insert( v );
   }
 
