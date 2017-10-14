@@ -1,0 +1,44 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Launch",
+            "program": "${workspaceRoot}/target/debug/scalar_set_eval",
+            "cwd": "${workspaceRoot}",
+            "args": [
+                "eval",
+                "big",
+                "1",
+                "200000",
+                "100000",
+                "1000"
+            ],
+            "sourceLanguages": [
+                "rust"                
+            ]
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug",
+            "program": "${workspaceRoot}/target/debug/scalar_set_eval",
+            "cwd": "${workspaceRoot}",
+            "args": [
+                "eval",
+                "ten",
+                "1",
+                "10",
+                "2",
+                "10"
+            ],
+            "sourceLanguages": [
+                "rust"
+            ]
+        }
+    ]
+}
