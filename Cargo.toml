@@ -13,4 +13,4 @@ authors = ["Juha Lepola <juha.lepola@gmail.com>"]
     rayon = "0.8"
 
 [dependencies.ro_scalar_set]
-    path = "../ro_scalar_set"
+    git = "https://github.com/Fluxie/ro_scalar_set.git"
