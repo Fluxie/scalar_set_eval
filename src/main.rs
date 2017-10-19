@@ -168,11 +168,12 @@ fn test(
       writeln!( &mut report,
           "Number of values in a set: {}", current_set_size )
           .expect( "Writing report failed." );;
+      writeln!( &mut report, "" ).expect( "Writing report failed." );
       writeln!( &mut report,
           "|{:14}|{:14}|{:14}|{:14}|",
           "Sets", "Test set size", "Matching sets", "Duration" ).expect( "Writing report failed." );
       writeln!( &mut report,
-          "|{:-<14}|{:-<14}|{:-<14}|{:-<14}|",
+          "|{:-<13}:|{:-<13}:|{:-<13}:|{:-<13}:|",
           "-", "-", "-", "-" ).expect( "Writing report failed." );
 
       write_header = false;
