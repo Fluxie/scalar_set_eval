@@ -11,8 +11,8 @@
             "program": "${workspaceRoot}/target/debug/scalar_set_eval",
             "cwd": "${workspaceRoot}",
             "args": [
-                "eval",
-                "big",
+                "test",
+                "report",
                 "1",
                 "200000",
                 "100000",
@@ -29,12 +29,12 @@
             "program": "${workspaceRoot}/target/debug/scalar_set_eval",
             "cwd": "${workspaceRoot}",
             "args": [
-                "eval",
-                "ten",
+                "test",
+                "report",
                 "1",
-                "10",
-                "2",
-                "10"
+                "200000",
+                "100000",
+                "1000"
             ],
             "sourceLanguages": [
                 "rust"
