@@ -11,6 +11,14 @@ authors = ["Juha Lepola <juha.lepola@gmail.com>"]
     serde_derive = "1.0" # if you're using `derive(Deserialize)`
     memmap = "0.5"
     rayon = "0.8"
+    ocl = { version = "0.15", features = ["opencl_vendor_mesa"] }
 
 [dependencies.ro_scalar_set]
-    git = "https://github.com/Fluxie/ro_scalar_set.git"
+    # git = "https://github.com/Fluxie/ro_scalar_set.git"
+    path = "../ro_scalar_set"
+    features = ["floats"]
+
+[patch.crates-io]
+    cl-sys = { git = "https://github.com/Fluxie/cl-sys.git", rev = "4b9a9cf" }
+    ocl-core = { git = "https://github.com/Fluxie/ocl-core.git", rev = "9b57407" }
+    ocl = { path = "../ocl" }

@@ -12,7 +12,6 @@ use std::path::Path;
 use std::io::prelude::*;
 use std::slice;
 use std::collections::HashSet;
-use std::iter::FromIterator;
 
 use memmap::{Mmap, Protection};
 use rand::distributions::{IndependentSample, Range};
@@ -24,9 +23,9 @@ const USAGE: &'static str = "
 Scalar Set Evaluator.
 
 Usage:
-  scalar_set_eval new <file> <minvalue> <maxvalue> <values> <sets>
-  scalar_set_eval eval <file> <minvalue> <maxvalue> <values> [<sets>]
-  scalar_set_eval test <report> <minvalue> <maxvalue> [<values>] [<sets>]
+  scalar_set_eval new [--floats] [--gpu] <file> <minvalue> <maxvalue> <values> <sets>
+  scalar_set_eval eval [--floats] [--gpu] <file> <minvalue> <maxvalue> <values> [<sets>]
+  scalar_set_eval test [--floats] [--gpu] <report> <minvalue> <maxvalue> [<values>] [<sets>]
   scalar_set_eval (-h | --help)
   scalar_set_eval --version
 ro_scalar_set
@@ -34,6 +33,8 @@ Options:
   -h --help     Show this screen.
   --version     Show version.
   --mt          Multi-threaded
+  --floats      Run tests using floating points
+  --gpu         Run tests on GPU
 ";
 
 #[derive(Debug, Deserialize)]
@@ -46,6 +47,8 @@ struct Args {
     arg_values: i32,
     flag_version: bool,
     flag_mt: bool,
+    flag_floats: bool,
+    flag_gpu: bool,
     cmd_new: bool,
     cmd_eval: bool,
     cmd_test: bool,
@@ -67,6 +70,34 @@ struct TestResult {
   matches: u32,
 }
 
+/// Trati for converting generate i32 to target test type.
+trait FromI32 {
+
+  fn from_i32(
+    value: &i32
+  ) -> Self;
+}
+
+/// We use floats
+impl FromI32 for f32 {
+
+    fn from_i32(
+      value: &i32
+    ) -> f32 {
+      return value.clone() as f32;
+    }
+}
+
+/// We use floats
+impl FromI32 for i32 {
+
+    fn from_i32(
+      value: &i32
+    ) -> i32 {
+      return value.clone();
+    }
+}
+
 fn main() {
   let args: Args = Docopt::new(USAGE)
                             .and_then(|d| d.deserialize())
@@ -74,15 +105,30 @@ fn main() {
 
   // Determine action.
    let start = std::time::Instant::now();
-  if args.cmd_new {
-    generate( &args.arg_file, args.arg_sets, args.arg_values, args.arg_minvalue, args.arg_maxvalue );
+  if args.cmd_new
+  {
+    // Data type
+    if args.flag_floats {
+      generate::< f32 >( &args.arg_file, args.arg_sets, args.arg_values, args.arg_minvalue, args.arg_maxvalue );
+    } else {
+      generate::< i32 >( &args.arg_file, args.arg_sets, args.arg_values, args.arg_minvalue, args.arg_maxvalue );
+    }
   }
-  else if args.cmd_eval {
-    let ( match_count, duration ) = evaluate( &args.arg_file, args.arg_values, args.arg_minvalue, args.arg_maxvalue );
-    println!("Found {} matches in {}.{:06} s", match_count, duration.as_secs(), duration.subsec_nanos() / 1000 );
+  else if args.cmd_eval
+  {
+    // Data type
+    if args.flag_floats {
+      let ( match_count, duration ) = evaluate::<f32>( &args.arg_file, args.arg_values, args.arg_minvalue, args.arg_maxvalue );
+      println!("Found {} matches in {}.{:06} s", match_count, duration.as_secs(), duration.subsec_nanos() / 1000 );
+    }
+    else
+    {
+      let ( match_count, duration ) = evaluate::<i32>( &args.arg_file, args.arg_values, args.arg_minvalue, args.arg_maxvalue );
+      println!("Found {} matches in {}.{:06} s", match_count, duration.as_secs(), duration.subsec_nanos() / 1000 );
+    }
   }
   else if args.cmd_test {
-    test( &args.arg_report, args.arg_minvalue, args.arg_maxvalue );
+    test( &args.arg_report, args.arg_minvalue, args.arg_maxvalue, args.flag_floats, args.flag_gpu );
   }
   else {
     println!("{}", "No tests selected." );
@@ -97,6 +143,8 @@ fn test(
   report: &String,
   min_value: i32,
   max_value: i32,
+  floats: bool,
+  gpu: bool
 )
 {
   // Define test material.
@@ -111,13 +159,18 @@ fn test(
     for set_count in &set_counts {
 
       // Reuse existing files if available.
-      let file_name = format!( "{}_sets_with_{}_values.bin", set_count, set_size,  );
+      let file_name = get_set_file_name( set_count, set_size, &floats );
       if Path::new( &file_name ).exists() {
         continue;
       }
 
       println!("Generating test set {}...", file_name );
-      generate( &file_name, *set_count, *set_size, min_value, max_value );
+      if floats {
+        generate::<f32>( &file_name, *set_count, *set_size, min_value, max_value );
+      }
+      else {
+        generate::<i32>( &file_name, *set_count, *set_size, min_value, max_value );
+      }
     }
   }
 
@@ -128,14 +181,20 @@ fn test(
       for test_set_size in &test_set_sizes {
 
         // Identify the current test.
-        let file_name = format!( "{}_sets_with_{}_values.bin", set_count, set_size,  );
+        let file_name = get_set_file_name( set_count, set_size, &floats );
         if ! Path::new( &file_name ).exists() {
-          panic!( "Generated file not found." );
+            panic!( "Generated file not found." );
         }
 
         // Run and measure.
         println!("Running test set {}...", file_name );
-        let ( match_count, duration ) = evaluate( &file_name, *test_set_size, min_value, max_value );
+        let evaluation_result;
+        if floats {
+          evaluation_result = evaluate::<f32>( &file_name, *test_set_size, min_value, max_value );
+        } else {
+          evaluation_result = evaluate::<i32>( &file_name, *test_set_size, min_value, max_value );
+        }
+        let ( match_count, duration ) = evaluation_result;
 
         // Collect results for reporting.
         let result = TestResult {
@@ -190,13 +249,13 @@ fn test(
 
 }
 
-fn generate(
+fn generate<T>(
   file: &String,
   set_count: i32,
   values_in_set: i32,
   min_value: i32,
   max_value: i32
-) {
+) where T: FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value {
 
   println!("Generating {} sets to {}...", set_count, file );
   let mut file = BufWriter::with_capacity( 1024 * 1024, std::fs::File::create( file ).expect( "Failed to open the file." ) );
@@ -208,7 +267,7 @@ fn generate(
   let sets: Vec<i32> = ( 0..set_count ).collect();
   let sets: Vec<_> = sets.par_iter()
       .map( |_| {
-        let values = generate_values( values_in_set, &between );
+        let values = generate_values::<T>( values_in_set, &between );
         let result = ro_scalar_set::ro_scalar_set::RoScalarSet::new( values.as_slice() );
         return result;
       } )
@@ -222,12 +281,13 @@ fn generate(
 }
 
 /// Evaluates integer sets.
-fn evaluate<'a>(
+fn evaluate<'a, T>(
   file: &String,
   values_in_set: i32,
   min_value: i32,
   max_value: i32
 ) -> ( u32, std::time::Duration )
+  where T: FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value
 {
   // Construct test vector.
   let between = Range::new( min_value, max_value );
@@ -238,8 +298,8 @@ fn evaluate<'a>(
   let file = Mmap::open( &file, Protection::Read ).expect( "Failed to map the file");  
   {
     let integer_count = file.len() / 4;
-    let buffer: *const i32 = file.ptr() as *const i32;
-    let buffer = as_i32( buffer, integer_count );
+    let buffer: *const T = file.ptr() as *const T;
+    let buffer = as_slice( buffer, integer_count );
     {
       // Divide
       let sets = attach_buffer( &buffer );
@@ -255,49 +315,56 @@ fn evaluate<'a>(
 }
 
 /// Evaluates a single set.
-fn evaluate_set(
-  test_set: &[i32],
-  set: &ro_scalar_set::RoScalarSet<i32>
-
-) -> u32 {
+fn evaluate_set<T>(
+  test_set: &[T],
+  set: &ro_scalar_set::RoScalarSet<T>,
+) -> u32
+  where T: FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value
+{
 
     // Test if any of values in the set are found from the current scalar set.
     for t in test_set
     {
-      if set.contains( *t ) {
+      if set.contains( t ) {
         return 1;
       }
     }
     return 0;
 }
 
-fn generate_values(
+fn generate_values< T >(
   values_in_set: i32,
   between: &Range<i32>
-) -> Vec<i32> {
+) -> Vec<T> where T: FromI32 {
  
   // Collect random values.
   let mut rng = rand::thread_rng();
-  let mut values: HashSet<i32> = HashSet::new();
-  values.reserve( values_in_set as usize );
-  while values.len() < values_in_set as usize {
+  let mut generated_values: HashSet<i32> = HashSet::new();
+  generated_values.reserve( values_in_set as usize );
+  while generated_values.len() < values_in_set as usize {
 
       let v = between.ind_sample( &mut rng );
-      values.insert( v );
+      generated_values.insert( v );
   }
 
-  let values: Vec<i32> = Vec::from_iter( values.into_iter() );
+  // Convert to appropriate type.
+  let mut values: Vec<T> = Vec::new();
+  for v in &generated_values {
+    values.push( T::from_i32( v ) );
+  }
   return values;
 }
 
 /// Attaches the buffer into scalar sets.
-fn attach_buffer<'a>(
-  buffer: &'a[i32]
-) -> Vec< ro_scalar_set::RoScalarSet<'a, i32>> {
+fn attach_buffer<'a, T>(
+  buffer: &'a[T]
+) -> Vec< ro_scalar_set::RoScalarSet<'a, T>>
+  where T: FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value
+{
  
   // Divide to buffers.
   let mut buffer = buffer;
-  let mut buffers: Vec<ro_scalar_set::RoScalarSet<i32>> = Vec::new();
+  let mut buffers: Vec<ro_scalar_set::RoScalarSet<T>> = Vec::new();
   loop {
       
     // Attach scalar set to the buffer.
@@ -310,11 +377,29 @@ fn attach_buffer<'a>(
   }; 
 }
 
+/// Gets file name for a set.
+fn get_set_file_name(
+  set_count: &i32,
+  set_size: &i32,
+  floats: &bool,
+) -> String
+{
+  let file_name;
+  if *floats {
+    file_name = format!( "f32_{}_sets_with_{}_values.bin", set_count, set_size,  );
+  }
+  else {
+    file_name = format!( "i32_{}_sets_with_{}_values.bin", set_count, set_size,  );
+  }
+
+  file_name
+}
+
 /// Converts a slice to 32-bit integer.
-fn as_i32<'a>(
-  buffer: *const i32,
+fn as_slice<'a, T>(
+  buffer: *const T,
   integer_count: usize
-) -> &'a[i32]
+) -> &'a[T]
 {
     unsafe { return slice::from_raw_parts( buffer, integer_count ); }
 }
