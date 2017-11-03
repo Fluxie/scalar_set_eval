@@ -54,6 +54,13 @@ struct Args {
     cmd_test: bool,
 }
 
+/// The enegine used to evluate the set.
+enum EvaluationEngine
+{
+  Cpu,
+  Gpu,
+}
+
 /// Results of a single test.
 ///  # Members
 /// * set_size Number of values in a set.
@@ -103,6 +110,8 @@ fn main() {
                             .and_then(|d| d.deserialize())
                             .unwrap_or_else(|e| e.exit());
 
+  let eval_engine = if args.flag_gpu { EvaluationEngine::Gpu } else { EvaluationEngine::Cpu };
+
   // Determine action.
    let start = std::time::Instant::now();
   if args.cmd_new
@@ -118,17 +127,19 @@ fn main() {
   {
     // Data type
     if args.flag_floats {
-      let ( match_count, duration ) = evaluate::<f32>( &args.arg_file, args.arg_values, args.arg_minvalue, args.arg_maxvalue );
+      let ( match_count, duration ) = evaluate::<f32>( 
+          &args.arg_file, args.arg_values, args.arg_minvalue, args.arg_maxvalue, &eval_engine );
       println!("Found {} matches in {}.{:06} s", match_count, duration.as_secs(), duration.subsec_nanos() / 1000 );
     }
     else
     {
-      let ( match_count, duration ) = evaluate::<i32>( &args.arg_file, args.arg_values, args.arg_minvalue, args.arg_maxvalue );
+      let ( match_count, duration ) = evaluate::<i32>(
+          &args.arg_file, args.arg_values, args.arg_minvalue, args.arg_maxvalue, &eval_engine );
       println!("Found {} matches in {}.{:06} s", match_count, duration.as_secs(), duration.subsec_nanos() / 1000 );
     }
   }
   else if args.cmd_test {
-    test( &args.arg_report, args.arg_minvalue, args.arg_maxvalue, args.flag_floats, args.flag_gpu );
+    test( &args.arg_report, args.arg_minvalue, args.arg_maxvalue, args.flag_floats, eval_engine );
   }
   else {
     println!("{}", "No tests selected." );
@@ -144,7 +155,7 @@ fn test(
   min_value: i32,
   max_value: i32,
   floats: bool,
-  gpu: bool
+  eval_engine: EvaluationEngine
 )
 {
   // Define test material.
@@ -178,31 +189,31 @@ fn test(
   let mut results: Vec<TestResult> = Vec::new();
   for set_size in &set_sizes {
     for set_count in &set_counts {
-      for test_set_size in &test_set_sizes {
+        for test_set_size in &test_set_sizes {
 
-        // Identify the current test.
-        let file_name = get_set_file_name( set_count, set_size, &floats );
-        if ! Path::new( &file_name ).exists() {
-            panic!( "Generated file not found." );
+            // Identify the current test.
+            let file_name = get_set_file_name( set_count, set_size, &floats );
+            if ! Path::new( &file_name ).exists() {
+                panic!( "Generated file not found." );
+            }
+
+            // Run and measure.
+            println!("Running test set {}...", file_name );
+            let evaluation_result;
+            if floats {
+                evaluation_result = evaluate::<f32>( &file_name, *test_set_size, min_value, max_value, &eval_engine );
+            } else {
+                evaluation_result = evaluate::<i32>( &file_name, *test_set_size, min_value, max_value, &eval_engine );
+            }
+            let ( match_count, duration ) = evaluation_result;
+
+            // Collect results for       reporting.
+            let result = TestResult {
+                set_size: *set_size, set_count: *set_count,
+                test_set_size: *test_set_size,
+                duration: duration, matches: match_count  };
+            results.push( result );
         }
-
-        // Run and measure.
-        println!("Running test set {}...", file_name );
-        let evaluation_result;
-        if floats {
-          evaluation_result = evaluate::<f32>( &file_name, *test_set_size, min_value, max_value );
-        } else {
-          evaluation_result = evaluate::<i32>( &file_name, *test_set_size, min_value, max_value );
-        }
-        let ( match_count, duration ) = evaluation_result;
-
-        // Collect results for reporting.
-        let result = TestResult {
-            set_size: *set_size, set_count: *set_count,
-            test_set_size: *test_set_size,
-            duration: duration, matches: match_count  };
-        results.push( result );
-      }
     }
   }
 
@@ -285,7 +296,8 @@ fn evaluate<'a, T>(
   file: &String,
   values_in_set: i32,
   min_value: i32,
-  max_value: i32
+  max_value: i32,
+  eval_engine: &EvaluationEngine,
 ) -> ( u32, std::time::Duration )
   where T: FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value
 {
@@ -301,21 +313,35 @@ fn evaluate<'a, T>(
     let buffer: *const T = file.ptr() as *const T;
     let buffer = as_slice( buffer, integer_count );
     {
-      // Divide
+      // Divide the buffer into sets.
       let sets = attach_buffer( &buffer );
       
       // Run tests for each set.
-      let start = std::time::Instant::now();
-      let match_counter = sets.par_iter().map( |s| evaluate_set( test_set.as_slice(), &s ) ).sum();      
-      let stop = std::time::Instant::now();
-      let duration = stop.duration_since( start );
+      let ( match_counter, duration ) = match *eval_engine 
+      {
+        EvaluationEngine::Cpu => evaluate_sets_cpu( &test_set, &sets ),
+        EvaluationEngine::Gpu => evaluate_sets_cpu( &test_set, &sets ),
+      };
       return ( match_counter, duration );
     }   
   }
 }
 
+fn evaluate_sets_cpu<T>(
+  test_set: &[T],
+  sets: &Vec< ro_scalar_set::RoScalarSet<T> >
+ ) -> ( u32, std::time::Duration )
+  where T: FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value
+{
+  let start = std::time::Instant::now();
+  let match_counter = sets.par_iter().map( |s| evaluate_set_cpu( test_set, &s ) ).sum();      
+  let stop = std::time::Instant::now();
+  let duration = stop.duration_since( start );
+  return ( match_counter, duration );
+}
+
 /// Evaluates a single set.
-fn evaluate_set<T>(
+fn evaluate_set_cpu<T>(
   test_set: &[T],
   set: &ro_scalar_set::RoScalarSet<T>,
 ) -> u32
