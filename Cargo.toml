@@ -3,6 +3,11 @@ name = "scalar_set_eval"
 version = "0.1.0"
 authors = ["Juha Lepola <juha.lepola@gmail.com>"]
 
+# Adds support for evaluating sets with gpu.
+[features]
+gpu = ["ocl"]
+
+
 [dependencies]
     rand = "0.3"
     byteorder = "1.0"
@@ -11,7 +16,7 @@ authors = ["Juha Lepola <juha.lepola@gmail.com>"]
     serde_derive = "1.0" # if you're using `derive(Deserialize)`
     memmap = "0.5"
     rayon = "0.8"
-    ocl = { version = "0.15", features = ["opencl_vendor_mesa"] }
+    ocl = { version = "0.15", features = ["opencl_vendor_mesa"], optional = true }
 
 [dependencies.ro_scalar_set]
     # git = "https://github.com/Fluxie/ro_scalar_set.git"

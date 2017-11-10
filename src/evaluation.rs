@@ -1,10 +1,15 @@
 extern crate ro_scalar_set;
 extern crate std;
 extern crate rayon;
+
+#[cfg(feature="gpu")]
 extern crate ocl;
 
+#[cfg(feature="gpu")]
 use self::ocl::ProQue;
+#[cfg(feature="gpu")]
 use self::ocl::Buffer;
+#[cfg(feature="gpu")]
 use self::ocl::MemFlags;
 
 use traits;
@@ -15,6 +20,7 @@ pub struct SetsForEvaluation<'a,T,>
 where
     T: 'a + traits::FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value + WithGpu
 {
+    #[cfg(feature="gpu")]
     raw_data: &'a[T],
     sets: Vec<ro_scalar_set::RoScalarSet<'a,T>>,
 }
@@ -24,12 +30,23 @@ where
     T: traits::FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value + WithGpu,
 {
     /// Initializes new set evaluator from a collection of sets.
+    #[cfg(feature="gpu")]
     pub fn new(
         raw_data: &'a[T],
         sets: Vec<ro_scalar_set::RoScalarSet<'a,T>>,
     ) -> SetsForEvaluation<'a,T>
     {
         return SetsForEvaluation { raw_data: raw_data, sets: sets };
+    }
+
+    /// Initializes new set evaluator from a collection of sets.
+    #[cfg(not(feature="gpu"))]
+    pub fn new(
+        _raw_data: &'a[T],
+        sets: Vec<ro_scalar_set::RoScalarSet<'a,T>>,
+    ) -> SetsForEvaluation<'a,T>
+    {
+        return SetsForEvaluation { sets: sets };
     }
 
     /// Evaluates the sets with CPU.
@@ -48,7 +65,19 @@ where
         return ( match_counter, duration );
     }
 
+
+    /// GPU evaluation enabled?
+    #[cfg(not(feature="gpu"))]
+    pub fn evaluate_sets_gpu( 
+        &self,
+        _test_set: &[T],
+    ) -> ( u32, std::time::Duration )
+    {
+        panic!("GPU evaluation support not enabled.");
+    }
+
     /// Evaluates the sets with GPU.
+    #[cfg(feature="gpu")]
     pub fn evaluate_sets_gpu( 
         &self,
         test_set: &[T],
@@ -64,6 +93,7 @@ where
 }
 
 /// Trait for evaluating values with GPU.
+#[cfg(feature="gpu")]
  pub trait WithGpu
  where
     Self: traits::FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value
@@ -77,13 +107,14 @@ where
 }
 
 /// GPU evaluation support for integers.
+#[cfg(feature="gpu")]
 impl WithGpu for i32
 {
         /// Evaluates the given data set with GPU.
     fn evaluate_with_gpu(
-        raw_data: &[i32],
-        sets: &Vec<ro_scalar_set::RoScalarSet<i32>>,
-        test_set: &[i32],
+        _raw_data: &[i32],
+        _sets: &Vec<ro_scalar_set::RoScalarSet<i32>>,
+        _test_set: &[i32],
     ) -> u32
     {
         panic!("Not implemented");
@@ -91,6 +122,7 @@ impl WithGpu for i32
 }
 
 /// GPU evaluation support for floats.
+#[cfg(feature="gpu")]
 impl WithGpu for f32
 {
         /// Evaluates the given data set with GPU.
@@ -201,6 +233,22 @@ impl WithGpu for f32
         println!("{}.{:06} s", calculation_duration.as_secs(), calculation_duration.subsec_nanos() / 1000 );
         0
     }
+}
+
+/// Dummy implementation when GPU support is not evaluated.
+#[cfg(not(feature="gpu"))]
+ pub trait WithGpu
+ {
+ }
+
+#[cfg(not(feature="gpu"))]
+impl WithGpu for i32
+{
+}
+
+#[cfg(not(feature="gpu"))]
+impl WithGpu for f32
+{
 }
 
 /// Evaluates a single set.
