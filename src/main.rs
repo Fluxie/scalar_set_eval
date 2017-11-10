@@ -15,9 +15,13 @@ use std::slice;
 
 use memmap::{Mmap, Protection};
 use rand::distributions::{IndependentSample, Range};
+use rayon::prelude::*;
 
 use docopt::Docopt;
-use rayon::prelude::*;
+
+mod evaluation;
+// use evaluation::WithGpu;
+mod traits;
 
 const USAGE: &'static str = "
 Scalar Set Evaluator.
@@ -77,30 +81,6 @@ struct TestResult
 
     duration: std::time::Duration,
     matches: u32,
-}
-
-/// Trati for converting generate i32 to target test type.
-trait FromI32
-{
-    fn from_i32( value: &i32 ) -> Self;
-}
-
-/// We use floats
-impl FromI32 for f32
-{
-    fn from_i32( value: &i32 ) -> f32
-    {
-        return value.clone() as f32;
-    }
-}
-
-/// We use floats
-impl FromI32 for i32
-{
-    fn from_i32( value: &i32 ) -> i32
-    {
-        return value.clone();
-    }
 }
 
 fn main()
@@ -368,7 +348,7 @@ fn generate<T>(
     min_value: i32,
     max_value: i32,
 ) where
-    T: FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value,
+    T: traits::FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value,
 {
 
     println!( "Generating {} sets to {}...", set_count, file );
@@ -408,7 +388,7 @@ fn evaluate<'a, T>(
     eval_engine: &EvaluationEngine,
 ) -> ( u32, std::time::Duration )
 where
-    T: FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value,
+    T: traits::FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value + evaluation::WithGpu,
 {
     // Construct test vector.
     let between = Range::new( min_value, max_value );
@@ -428,56 +408,21 @@ where
             // Run tests for each set.
             let ( match_counter, duration ) = match *eval_engine
             {
-                EvaluationEngine::Cpu => evaluate_sets_cpu( &test_set, &sets ),
-                EvaluationEngine::Gpu => evaluate_sets_cpu( &test_set, &sets ),
+                EvaluationEngine::Cpu => sets.evaluate_with_cpu( &test_set ),
+                EvaluationEngine::Gpu => sets.evaluate_sets_gpu( &test_set ),
             };
             return ( match_counter, duration );
         }
     }
 }
 
-fn evaluate_sets_cpu<T>( 
-    test_set: &[T],
-    sets: &Vec<ro_scalar_set::RoScalarSet<T>>,
-) -> ( u32, std::time::Duration )
-where
-    T: FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value,
-{
-    let start = std::time::Instant::now();
-    let match_counter = sets.par_iter()
-        .map( |s| evaluate_set_cpu( test_set, &s ) )
-        .sum();
-    let stop = std::time::Instant::now();
-    let duration = stop.duration_since( start );
-    return ( match_counter, duration );
-}
-
-/// Evaluates a single set.
-fn evaluate_set_cpu<T>( 
-    test_set: &[T],
-    set: &ro_scalar_set::RoScalarSet<T>,
-) -> u32
-where
-    T: FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value,
-{
-
-    // Test if any of values in the set are found from the current scalar set.
-    for t in test_set
-    {
-        if set.contains( t )
-        {
-            return 1;
-        }
-    }
-    return 0;
-}
 
 fn generate_values<T>( 
     values_in_set: i32,
     between: &Range<i32>,
 ) -> Vec<T>
 where
-    T: FromI32,
+    T: traits::FromI32,
 {
 
     // Collect random values.
@@ -501,13 +446,13 @@ where
 }
 
 /// Attaches the buffer into scalar sets.
-fn attach_buffer<'a, T>( buffer: &'a [T] ) -> Vec<ro_scalar_set::RoScalarSet<'a, T>>
+fn attach_buffer<'a, T>( data: &'a [T] ) -> evaluation::SetsForEvaluation<T>
 where
-    T: FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value,
+    T: traits::FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value + evaluation::WithGpu,
 {
 
     // Divide to buffers.
-    let mut buffer = buffer;
+    let mut buffer = data;
     let mut buffers: Vec<ro_scalar_set::RoScalarSet<T>> = Vec::new();
     loop
     {
@@ -516,11 +461,12 @@ where
         let result = match ro_scalar_set::RoScalarSet::attach( buffer )
         {
             Ok( result ) => result,
-            Err( _ ) => return buffers,
+            Err( _ ) => break,
         };
         buffer = result.1;
         buffers.push( result.0 );
     }
+    return evaluation::SetsForEvaluation::new( data, buffers );
 }
 
 /// Gets file name for a set.
@@ -544,7 +490,7 @@ fn get_set_file_name(
 }
 
 /// Converts a slice to 32-bit integer.
-fn as_slice<'a, T>(
+fn as_slice<'a, T>( 
     buffer: *const T,
     integer_count: usize,
 ) -> &'a [T]
