@@ -408,7 +408,7 @@ where
             // Run tests for each set.
             let ( match_counter, duration ) = match *eval_engine
             {
-                EvaluationEngine::Cpu => sets.evaluate_with_cpu( &test_set ),
+                EvaluationEngine::Cpu => sets.evaluate_with_cpu( &ro_scalar_set::RoScalarSet::new( &test_set ) ),
                 EvaluationEngine::Gpu => sets.evaluate_sets_gpu( &test_set ),
             };
             return ( match_counter, duration );

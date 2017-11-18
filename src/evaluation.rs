@@ -52,7 +52,7 @@ where
     /// Evaluates the sets with CPU.
     pub fn evaluate_with_cpu(
         &self,
-        test_set: &[T],
+        test_set: &ro_scalar_set::RoScalarSet<T>,
     ) -> ( u32, std::time::Duration )
     {
         // Evaluate the sets in parallel.
@@ -253,20 +253,12 @@ impl WithGpu for f32
 
 /// Evaluates a single set.
 fn evaluate_set_cpu<T>(
-    test_set: &[T],
+    test_set: &ro_scalar_set::RoScalarSet<T>,
     set: &ro_scalar_set::RoScalarSet<T>,
 ) -> u32
 where
     T: traits::FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value,
 {
     // Test if any of values in the set are found from the current scalar set.
-    for t in test_set
-    {
-        // Match found?
-        if set.contains( t )
-        {
-            return 1;
-        }
-    }
-    return 0;
+    if test_set.any( set ) { 1 } else { 0 }
 }
