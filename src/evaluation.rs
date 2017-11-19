@@ -1,6 +1,8 @@
 extern crate ro_scalar_set;
 extern crate std;
 extern crate rayon;
+extern crate rand;
+extern crate memmap;
 
 #[cfg(feature="gpu")]
 extern crate ocl;
@@ -12,13 +14,57 @@ use self::ocl::Buffer;
 #[cfg(feature="gpu")]
 use self::ocl::MemFlags;
 
-use traits;
+use std::slice;
+
+use memmap::{Mmap, Protection};
 use self::rayon::prelude::*;
+use rand::distributions::{Range};
+
+use enumerations::*;
+use traits::*;
+use utility;
+
+/// Evaluates integer sets.
+pub fn evaluate<'a, T>(
+    file: &String,
+    values_in_set: i32,
+    min_value: i32,
+    max_value: i32,
+    eval_engine: &EvaluationEngine,
+) -> ( u32, std::time::Duration )
+where
+    T: FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value + WithGpu,
+{
+    // Construct test vector.
+    let between = Range::new( min_value, max_value );
+    let test_set = utility::generate_values( values_in_set, &between );
+
+    // Open file for reading.
+    let file = std::fs::File::open( file ).expect( "Failed to open the file." );
+    let file = Mmap::open( &file, Protection::Read ).expect( "Failed to map the file" );
+    {
+        let integer_count = file.len() / 4;
+        let buffer: *const T = file.ptr() as *const T;
+        let buffer = as_slice( buffer, integer_count );
+        {
+            // Divide the buffer into sets.
+            let sets = attach_buffer( &buffer );
+
+            // Run tests for each set.
+            let ( match_counter, duration ) = match *eval_engine
+            {
+                EvaluationEngine::Cpu => sets.evaluate_with_cpu( &ro_scalar_set::RoScalarSet::new( &test_set ) ),
+                EvaluationEngine::Gpu => sets.evaluate_sets_gpu( &test_set ),
+            };
+            return ( match_counter, duration );
+        }
+    }
+}
 
 /// Declares a set that can be evaluated.
 pub struct SetsForEvaluation<'a,T,>
 where
-    T: 'a + traits::FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value + WithGpu
+    T: 'a + FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value + WithGpu
 {
     #[cfg(feature="gpu")]
     raw_data: &'a[T],
@@ -27,7 +73,7 @@ where
 
 impl<'a,T> SetsForEvaluation<'a,T>
 where
-    T: traits::FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value + WithGpu,
+    T: FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value + WithGpu,
 {
     /// Initializes new set evaluator from a collection of sets.
     #[cfg(feature="gpu")]
@@ -68,7 +114,7 @@ where
 
     /// GPU evaluation enabled?
     #[cfg(not(feature="gpu"))]
-    pub fn evaluate_sets_gpu( 
+    pub fn evaluate_sets_gpu(
         &self,
         _test_set: &[T],
     ) -> ( u32, std::time::Duration )
@@ -78,7 +124,7 @@ where
 
     /// Evaluates the sets with GPU.
     #[cfg(feature="gpu")]
-    pub fn evaluate_sets_gpu( 
+    pub fn evaluate_sets_gpu(
         &self,
         test_set: &[T],
     ) -> ( u32, std::time::Duration )
@@ -156,7 +202,7 @@ impl WithGpu for f32
                             }
                         }
                     }
-                    
+
                 }
             "#;
 
@@ -182,7 +228,7 @@ impl WithGpu for f32
         begin_indexes.reserve( sets.len() );
         end_indexes.reserve( sets.len() );
         let mut set_start = 0;
-        for s in sets 
+        for s in sets
         {
             let buckets = s.bucket_count();
             let size = s.size();
@@ -235,7 +281,7 @@ impl WithGpu for f32
     }
 }
 
-/// Dummy implementation when GPU support is not evaluated.
+/// Dummy implementation when GPU support is not included.
 #[cfg(not(feature="gpu"))]
  pub trait WithGpu
  {
@@ -251,14 +297,51 @@ impl WithGpu for f32
 {
 }
 
+
+/// Attaches the buffer into scalar sets.
+fn attach_buffer<'a, T>( data: &'a [T] ) -> SetsForEvaluation<T>
+where
+    T: FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value + WithGpu,
+{
+
+    // Divide to buffers.
+    let mut buffer = data;
+    let mut buffers: Vec<ro_scalar_set::RoScalarSet<T>> = Vec::new();
+    loop
+    {
+
+        // Attach scalar set to the buffer.
+        let result = match ro_scalar_set::RoScalarSet::attach( buffer )
+        {
+            Ok( result ) => result,
+            Err( _ ) => break,
+        };
+        buffer = result.1;
+        buffers.push( result.0 );
+    }
+    return SetsForEvaluation::new( data, buffers );
+}
+
 /// Evaluates a single set.
 fn evaluate_set_cpu<T>(
     test_set: &ro_scalar_set::RoScalarSet<T>,
     set: &ro_scalar_set::RoScalarSet<T>,
 ) -> u32
 where
-    T: traits::FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value,
+    T: FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value,
 {
     // Test if any of values in the set are found from the current scalar set.
     if test_set.any( set ) { 1 } else { 0 }
+}
+
+
+/// Converts a slice to 32-bit integer.
+fn as_slice<'a, T>(
+    buffer: *const T,
+    integer_count: usize,
+) -> &'a [T]
+{
+    unsafe {
+        return slice::from_raw_parts( buffer, integer_count );
+    }
 }
