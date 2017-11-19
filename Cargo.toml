@@ -1,6 +1,6 @@
 [package]
 name = "scalar_set_eval"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Juha Lepola <juha.lepola@gmail.com>"]
 
 # Adds support for evaluating sets with gpu.

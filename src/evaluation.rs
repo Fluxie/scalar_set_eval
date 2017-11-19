@@ -24,23 +24,40 @@ use enumerations::*;
 use traits::*;
 use utility;
 
+/// Parameters for the evaluation.
+pub struct EvaluationParams<'a>
+{
+    pub file: &'a String,
+    pub values_in_set: i32,
+    pub min_value: i32,
+    pub max_value: i32,
+    pub preload_data: bool,
+    pub max_threads: usize,
+    pub eval_engine: &'a EvaluationEngine,
+}
+
+/// Holds the results of an evaluation
+pub struct EvaluationResult
+{
+    pub match_count: u32,
+    pub duration: std::time::Duration,
+    pub data_preloaded: bool,
+    pub thread_count: usize
+}
+
 /// Evaluates integer sets.
 pub fn evaluate<'a, T>(
-    file: &String,
-    values_in_set: i32,
-    min_value: i32,
-    max_value: i32,
-    eval_engine: &EvaluationEngine,
-) -> ( u32, std::time::Duration )
+    params: &EvaluationParams
+) -> EvaluationResult
 where
     T: FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value + WithGpu,
 {
     // Construct test vector.
-    let between = Range::new( min_value, max_value );
-    let test_set = utility::generate_values( values_in_set, &between );
+    let between = Range::new( params.min_value, params.max_value );
+    let test_set = utility::generate_values( params.values_in_set, &between );
 
     // Open file for reading.
-    let file = std::fs::File::open( file ).expect( "Failed to open the file." );
+    let file = std::fs::File::open( params.file ).expect( "Failed to open the file." );
     let file = Mmap::open( &file, Protection::Read ).expect( "Failed to map the file" );
     {
         let integer_count = file.len() / 4;
@@ -48,15 +65,16 @@ where
         let buffer = as_slice( buffer, integer_count );
         {
             // Divide the buffer into sets.
-            let sets = attach_buffer( &buffer );
+            let sets = load_data( &buffer, params.preload_data );
 
             // Run tests for each set.
-            let ( match_counter, duration ) = match *eval_engine
+            let result= match * params.eval_engine
             {
-                EvaluationEngine::Cpu => sets.evaluate_with_cpu( &ro_scalar_set::RoScalarSet::new( &test_set ) ),
+                EvaluationEngine::Cpu => sets.evaluate_with_cpu( &ro_scalar_set::RoScalarSet::new( &test_set ),
+                    params.preload_data, params.max_threads ),
                 EvaluationEngine::Gpu => sets.evaluate_sets_gpu( &test_set ),
             };
-            return ( match_counter, duration );
+            return result;
         }
     }
 }
@@ -99,16 +117,20 @@ where
     pub fn evaluate_with_cpu(
         &self,
         test_set: &ro_scalar_set::RoScalarSet<T>,
-    ) -> ( u32, std::time::Duration )
+        data_preloaded: bool,
+        thread_count: usize,
+    ) -> EvaluationResult
     {
-        // Evaluate the sets in parallel.
-        let start = std::time::Instant::now();
-        let match_counter = self.sets.par_iter()
-                .map( |s| evaluate_set_cpu( test_set, &s ) )
-                .sum();
-        let stop = std::time::Instant::now();
-        let duration = stop.duration_since( start );
-        return ( match_counter, duration );
+        // Limit the number of threads used in the testing.
+        let threads = rayon::ThreadPool::new(
+                rayon::Configuration:: new().num_threads( thread_count )
+        ).unwrap();
+        let result = threads.install(
+
+            // Run the test under the thread count limitation.
+            || SetsForEvaluation::evaluate_with_cpu_expr( &self.sets, test_set, data_preloaded )
+        );
+        return result;
     }
 
 
@@ -117,7 +139,7 @@ where
     pub fn evaluate_sets_gpu(
         &self,
         _test_set: &[T],
-    ) -> ( u32, std::time::Duration )
+    ) -> EvaluationResult
     {
         panic!("GPU evaluation support not enabled.");
     }
@@ -127,14 +149,31 @@ where
     pub fn evaluate_sets_gpu(
         &self,
         test_set: &[T],
-    ) -> ( u32, std::time::Duration )
+    ) -> EvaluationResult
     {
         // Delegate to appropriate implementation depending on the data type.
         let start = std::time::Instant::now();
         let match_counter = WithGpu::evaluate_with_gpu( self.raw_data, &self.sets, test_set );
         let stop = std::time::Instant::now();
         let duration = stop.duration_since( start );
-        return ( match_counter, duration );
+        EvaluationResult { match_count: match_counter, duration: duration };
+    }
+
+    fn evaluate_with_cpu_expr(
+        sets: &Vec<ro_scalar_set::RoScalarSet<'a,T>>,
+        test_set: &ro_scalar_set::RoScalarSet<T>,
+        data_preloaded: bool,
+    ) -> EvaluationResult
+    {
+        // Evaluate the sets in parallel.
+        let start = std::time::Instant::now();
+        let match_counter = sets.par_iter()
+                .map( |s| evaluate_set_cpu( test_set, &s ) )
+                .sum();
+        let stop = std::time::Instant::now();
+        let duration = stop.duration_since( start );
+        return EvaluationResult { match_count: match_counter, duration: duration,
+                data_preloaded: data_preloaded, thread_count: rayon::current_num_threads() };
     }
 }
 
@@ -299,7 +338,10 @@ impl WithGpu for f32
 
 
 /// Attaches the buffer into scalar sets.
-fn attach_buffer<'a, T>( data: &'a [T] ) -> SetsForEvaluation<T>
+fn load_data<'a, T>(
+    data: &'a [T],
+    preload_to_memory: bool
+) -> SetsForEvaluation<T>
 where
     T: FromI32 + std::clone::Clone + std::marker::Send + std::marker::Sync + ro_scalar_set::Value + WithGpu,
 {
@@ -310,7 +352,7 @@ where
     loop
     {
 
-        // Attach scalar set to the buffer.
+        // Attach scalar set to the buffer.    // Re
         let result = match ro_scalar_set::RoScalarSet::attach( buffer )
         {
             Ok( result ) => result,
@@ -318,6 +360,12 @@ where
         };
         buffer = result.1;
         buffers.push( result.0 );
+    }
+
+    // Load the data into the memory?
+    if preload_to_memory
+    {
+        buffers = buffers.par_iter().map( |s| s.clone() ).collect();
     }
     return SetsForEvaluation::new( data, buffers );
 }

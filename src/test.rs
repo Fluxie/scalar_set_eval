@@ -1,3 +1,4 @@
+extern crate rayon;
 extern crate std;
 
 use std::io::BufWriter;
@@ -9,13 +10,15 @@ use enumerations::*;
 use utility::*;
 
 /// Configurable parameters for the test.
-pub struct Parameters<'a>
+struct Parameters<'a>
 {
     report: &'a String,
     min_value: i32,
     max_value: i32,
     use_floats: bool,
-    engine: EvaluationEngine,
+    preload_data: bool,
+    thread_count: usize,
+    engine: &'a EvaluationEngine,
 }
 
 /// Results of a single test.
@@ -30,27 +33,66 @@ struct TestResult
     set_size: i32,
     set_count: i32,
     test_set_size: i32,
-
-    duration: std::time::Duration,
-    matches: u32,
+    eval_result: EvaluationResult
 }
 
 pub fn run_tests(
-    report_pattern: &String,
+    report_name: &String,
     min_value: i32,
     max_value: i32,
     floats: bool,
-    eval_engine: EvaluationEngine,
+    eval_engine: &EvaluationEngine,
 )
 {
-    let params = Parameters {
-        report: report_pattern,
-        min_value: min_value,
-        max_value: max_value,
-        use_floats: floats,
-        engine: eval_engine,
-    };
-    run_test( params );
+    // Run the non-preloaded cases before loading the data into memory.
+    // NOTE: Some operating systems will keep the test material in file system cache
+    // in which the this option is not that relevant.
+    let preload = vec![false,true];
+
+    // Determine the thread counts we can use for testing.
+    // The maximum number of threads is limited by the number of logical threads
+    // available in the system.
+    let mut thread_counts: Vec<usize> = Vec::new();
+    {
+        let max_threads = rayon::current_num_threads();
+        let mut last = 1;
+        thread_counts.push( last );
+        while last < max_threads
+        {
+            // Double the number of threads for each test until
+            // max_threads is reached.
+            let next = std::cmp::min( last * 2, max_threads );
+            thread_counts.push( next );
+            last = next;
+        }
+    }
+    // thread_counts = vec![ 1, 8, 16];
+
+    // Run all different scenarios.
+    for pr in preload
+    {
+        for thread_count in &thread_counts
+        {
+            // Determine file name for this test scenario.
+            let execution_params;
+            if pr { execution_params = format!("{}-threads_with_preload", thread_count )}
+            else { execution_params = format!( "{}-threads_no_preload", thread_count )};
+            let report = format!( "{}_{}.md", report_name, execution_params );
+
+            // Execute the test.
+            let params = Parameters {
+                report: &report,
+                min_value: min_value,
+                max_value: max_value,
+                use_floats: floats,
+                preload_data: pr,
+                thread_count: *thread_count,
+                engine: eval_engine,
+            };
+            run_test( params );
+        }
+    }
+
 }
 
 /// Executes one test with the given parameters.
@@ -74,7 +116,6 @@ fn run_test( parameters: Parameters )
         {
             for test_set_size in &test_set_sizes
             {
-
                 // Identify the current test.
                 let file_name = get_set_file_name( set_count, set_size, &parameters.use_floats );
                 if !Path::new( &file_name ).exists()
@@ -82,38 +123,37 @@ fn run_test( parameters: Parameters )
                     panic!( "Generated file not found." );
                 }
 
+                // Construct parameters
+                let params = EvaluationParams
+                {
+                    file: &file_name,
+                    values_in_set: *test_set_size,
+                    min_value: parameters.min_value,
+                    max_value: parameters.max_value,
+                    preload_data: parameters.preload_data,
+                    max_threads: parameters.thread_count,
+                    eval_engine: parameters.engine,
+                };
+
                 // Run and measure.
                 println!( "Running test set {}...", file_name );
                 let evaluation_result;
                 if parameters.use_floats
                 {
-                    evaluation_result = evaluate::<f32>(
-                        &file_name,
-                        *test_set_size,
-                        parameters.min_value,
-                        parameters.max_value,
-                        &parameters.engine,
-                    );
+                    evaluation_result = evaluate::<f32>( &params );
                 }
                 else
                 {
-                    evaluation_result = evaluate::<i32>(
-                        &file_name,
-                        *test_set_size,
-                        parameters.min_value,
-                        parameters.max_value,
-                        &parameters.engine,
-                    );
+                    evaluation_result = evaluate::<i32>( &params );
                 }
-                let ( match_count, duration ) = evaluation_result;
+                let result = evaluation_result;
 
                 // Collect results for       reporting.
                 let result = TestResult {
                     set_size: *set_size,
                     set_count: *set_count,
                     test_set_size: *test_set_size,
-                    duration: duration,
-                    matches: match_count,
+                    eval_result: result,
                 };
                 results.push( result );
             }
@@ -136,11 +176,25 @@ fn run_test( parameters: Parameters )
             current_set_size = result.set_size;
         }
 
-        // Header?
+        // Write header?
         if write_header
         {
 
             writeln!( &mut report, "" ).expect( "Writing report failed." );
+            if result.eval_result.data_preloaded
+            {
+                writeln!( &mut report, "Data preloaded into memory for evaluation." ).expect( "Writing report failed." );
+            }
+            else
+            {
+                 writeln!( &mut report, "Data read directly from file for evalution." ).expect( "Writing report failed." );
+            }
+            writeln!( &mut report, "" ).expect( "Writing report failed." );
+            writeln!(
+                &mut report,
+                "Number of threads: {}",
+                result.eval_result.thread_count,
+            ).expect( "Writing report failed." );;
             writeln!(
                 &mut report,
                 "Number of values in a set: {}",
@@ -173,9 +227,9 @@ fn run_test( parameters: Parameters )
             "|{:14}|{:14}|{:14}|{:5}.{:06} s|",
             result.set_count,
             result.test_set_size,
-            result.matches,
-            result.duration.as_secs(),
-            result.duration.subsec_nanos() / 1000
+            result.eval_result.match_count,
+            result.eval_result.duration.as_secs(),
+            result.eval_result.duration.subsec_nanos() / 1000
         ).expect( "Writing report failed." );
 
     }

@@ -56,7 +56,7 @@ struct Args
 fn main()
 {
 
-    // TEst
+    // Test
     let args: Args = Docopt::new( USAGE )
         .and_then( |d| d.deserialize() )
         .unwrap_or_else( |e| e.exit() );
@@ -98,37 +98,37 @@ fn main()
     }
     else if args.cmd_eval
     {
+        // Construct parameters
+        let params = evaluation::EvaluationParams
+        {
+            file: &args.arg_file,
+            values_in_set: args.arg_values,
+            min_value: args.arg_minvalue,
+            max_value: args.arg_maxvalue,
+            preload_data: false,
+            max_threads: 0,
+            eval_engine: &eval_engine,
+        };
+
         // Data type
         if args.flag_floats
         {
-            let ( match_count, duration ) = evaluation::evaluate::<f32>(
-                &args.arg_file,
-                args.arg_values,
-                args.arg_minvalue,
-                args.arg_maxvalue,
-                &eval_engine,
-            );
+            let result= evaluation::evaluate::<f32>( &params );
             println!(
                 "Found {} matches in {}.{:06} s",
-                match_count,
-                duration.as_secs(),
-                duration.subsec_nanos() / 1000
+                result.match_count,
+                result.duration.as_secs(),
+                result.duration.subsec_nanos() / 1000
             );
         }
         else
         {
-            let ( match_count, duration ) = evaluation::evaluate::<i32>(
-                &args.arg_file,
-                args.arg_values,
-                args.arg_minvalue,
-                args.arg_maxvalue,
-                &eval_engine,
-            );
+            let result = evaluation::evaluate::<i32>( &params );
             println!(
                 "Found {} matches in {}.{:06} s",
-                match_count,
-                duration.as_secs(),
-                duration.subsec_nanos() / 1000
+                result.match_count,
+                result.duration.as_secs(),
+                result.duration.subsec_nanos() / 1000
             );
         }
     }
@@ -139,7 +139,7 @@ fn main()
             args.arg_minvalue,
             args.arg_maxvalue,
             args.flag_floats,
-            eval_engine,
+            &eval_engine,
         );
     }
     else
